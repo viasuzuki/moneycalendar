@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="マネーカレンダー"/>
+  <title>マネーカレンダー</title>
+  <script>
+    window.addEventListener('DOMContentLoaded',()=>{
+      const svg=`<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#92700a"/><stop offset="100%" stop-color="#c9a84c"/></linearGradient></defs><rect width="100" height="100" rx="22" fill="url(#g)"/><text x="50" y="62" text-anchor="middle" font-size="52" font-weight="700" fill="white" font-family="Arial" opacity="0.95">¥</text><rect x="22" y="72" width="56" height="3" rx="1.5" fill="white" opacity="0.4"/><rect x="30" y="80" width="40" height="3" rx="1.5" fill="white" opacity="0.25"/></svg>`;
+      const c=document.createElement('canvas'); c.width=180; c.height=180;
+      const img=new Image();
+      img.onload=()=>{ c.getContext('2d').drawImage(img,0,0,180,180); const l=document.createElement('link'); l.rel='apple-touch-icon'; l.href=c.toDataURL('image/png'); document.head.appendChild(l); };
+      img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);
+    });
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Zen+Kaku+Gothic+New:wght@300;400;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    html,body,#root{height:100%;}
+    ::-webkit-scrollbar{width:4px;}
+    ::-webkit-scrollbar-thumb{background:#334155;border-radius:2px;}
+    .day-cell{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:8px;cursor:pointer;transition:all 0.15s;border:1px solid transparent;position:relative;gap:2px;}
+    .day-cell:active{opacity:0.7;}
+    .day-cell.selected{border-color:#3b82f6!important;}
+    .day-cell.today{border-color:#475569;}
+    .btn{border:none;cursor:pointer;border-radius:6px;padding:8px 16px;font-family:inherit;font-size:13px;transition:all 0.15s;}
+    .btn:active{opacity:0.7;}
+    .input-field{background:#1e293b;border:1px solid #334155;border-radius:6px;color:#e2e8f0;padding:10px 12px;font-family:inherit;font-size:14px;width:100%;outline:none;}
+    .input-field:focus{border-color:#3b82f6;}
+    .type-btn{flex:1;padding:8px;border:none;border-radius:6px;font-family:inherit;font-size:13px;cursor:pointer;transition:all 0.15s;}
+    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:flex-end;justify-content:center;z-index:200;}
+    .modal{background:#161f2e;border:1px solid #1e293b;border-radius:16px 16px 0 0;padding:24px 24px calc(24px + env(safe-area-inset-bottom));width:100%;max-width:480px;}
+    .tx-item{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#1e293b;border-radius:8px;margin-bottom:6px;cursor:pointer;}
+    .tx-item:active{opacity:0.7;}
+    .del-btn{background:none;border:none;color:#64748b;cursor:pointer;font-size:16px;padding:4px 8px;border-radius:4px;}
+    .bottom-tab{position:fixed;bottom:0;left:0;right:0;display:flex;align-items:center;padding:8px 0 calc(8px + env(safe-area-inset-bottom));z-index:100;}
+    .tab-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:4px 0;border:none;background:none;font-family:inherit;}
+    .settings-row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid #1e293b;}
+    .swatch{width:30px;height:30px;border-radius:8px;cursor:pointer;transition:box-shadow 0.15s;}
+    .yr-row{display:grid;grid-template-columns:3rem 1fr 1fr 1fr;gap:4px;padding:8px 0;border-bottom:1px solid;}
+    .yr-row:last-child{border-bottom:none;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useCallback,useMemo}=React;
+
+const SETTINGS_KEY="mc-settings";
+const TX_KEY=id=>`mc-tx-${id}`;
+const TRACKER_KEY=id=>`mc-tracker-${id}`;
+
+const DEFAULT_SETTINGS={
+  tabs:[
+    {id:"work",    name:"仕事",        bg:"#0d1117"},
+    {id:"private", name:"プライベート", bg:"#0d1117"},
+    {id:"total",   name:"合計",         bg:"#0d1117",isTotal:true},
+  ]
+};
+
+const BG_COLORS=[
+  {label:"ダーク",         value:"#0d1117"},
+  {label:"ネイビー",       value:"#050d1a"},
+  {label:"ディープグリーン",value:"#041a0d"},
+  {label:"ディープワイン", value:"#1a0509"},
+  {label:"チャコール",     value:"#131313"},
+  {label:"スレート",       value:"#0c1220"},
+  {label:"ホワイト",       value:"#ffffff"},
+];
+
+const HOLIDAYS={
+  "2024-01-01":"元日","2024-01-08":"成人の日","2024-02-11":"建国記念の日","2024-02-12":"振替休日","2024-02-23":"天皇誕生日","2024-03-20":"春分の日","2024-04-29":"昭和の日","2024-05-03":"憲法記念日","2024-05-04":"みどりの日","2024-05-05":"こどもの日","2024-05-06":"振替休日","2024-07-15":"海の日","2024-08-11":"山の日","2024-08-12":"振替休日","2024-09-16":"敬老の日","2024-09-22":"秋分の日","2024-09-23":"振替休日","2024-10-14":"スポーツの日","2024-11-03":"文化の日","2024-11-04":"振替休日","2024-11-23":"勤労感謝の日",
+  "2025-01-01":"元日","2025-01-13":"成人の日","2025-02-11":"建国記念の日","2025-02-23":"天皇誕生日","2025-02-24":"振替休日","2025-03-20":"春分の日","2025-04-29":"昭和の日","2025-05-03":"憲法記念日","2025-05-04":"みどりの日","2025-05-05":"こどもの日","2025-05-06":"振替休日","2025-07-21":"海の日","2025-08-11":"山の日","2025-09-15":"敬老の日","2025-09-23":"秋分の日","2025-10-13":"スポーツの日","2025-11-03":"文化の日","2025-11-23":"勤労感謝の日","2025-11-24":"振替休日",
+  "2026-01-01":"元日","2026-01-12":"成人の日","2026-02-11":"建国記念の日","2026-02-23":"天皇誕生日","2026-03-20":"春分の日","2026-04-29":"昭和の日","2026-05-03":"憲法記念日","2026-05-04":"みどりの日","2026-05-05":"こどもの日","2026-05-06":"振替休日","2026-07-20":"海の日","2026-08-11":"山の日","2026-09-21":"敬老の日","2026-09-22":"国民の休日","2026-09-23":"秋分の日","2026-10-12":"スポーツの日","2026-11-03":"文化の日","2026-11-23":"勤労感謝の日",
+  "2027-01-01":"元日","2027-01-11":"成人の日","2027-02-11":"建国記念の日","2027-02-23":"天皇誕生日","2027-03-21":"春分の日","2027-03-22":"振替休日","2027-04-29":"昭和の日","2027-05-03":"憲法記念日","2027-05-04":"みどりの日","2027-05-05":"こどもの日","2027-07-19":"海の日","2027-08-11":"山の日","2027-09-20":"敬老の日","2027-09-23":"秋分の日","2027-10-11":"スポーツの日","2027-11-03":"文化の日","2027-11-23":"勤労感謝の日",
+};
+
+const toDateStr=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const fmtM=n=>{const a=Math.abs(n).toLocaleString("ja-JP");return n<0?`-¥${a}`:`¥${a}`;};
+const isSameDay=(a,b)=>a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
+const balColor=b=>b>0?"#4ade80":b<0?"#f87171":"#94a3b8";
+const isLight=bg=>bg==="#ffffff";
+const DAYS_JP=["月","火","水","木","金","土","日"];
+const MONTHS=["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+
+function colors(bg){
+  const l=isLight(bg);
+  return{
+    text:    l?"#0f172a":"#e2e8f0",
+    sub:     l?"#475569":"#94a3b8",
+    muted:   l?"#94a3b8":"#64748b",
+    panel:   l?"#f1f5f9":"#ffffff0d",
+    border:  l?"#e2e8f0":"#1e293b",
+    income:  l?"#16a34a":"#4ade80",
+    expense: l?"#dc2626":"#f87171",
+    bal:     (b)=>l?(b>0?"#16a34a":b<0?"#dc2626":"#475569"):balColor(b),
+    sun:     l?"#dc2626":"#fca5a5",
+    sat:     l?"#2563eb":"#93c5fd",
+    weekday: l?"#0f172a":"#cbd5e1",
+  };
+}
+
+// ─── Annual View ───────────────────────────────────────────────
+function AnnualView({txs,year,onYearChange,bg}){
+  const C=colors(bg);
+  const months=Array.from({length:12},(_,m)=>{
+    const ms=`${year}-${String(m+1).padStart(2,"0")}`;
+    const mt=txs.filter(t=>t.date.startsWith(ms));
+    const inc=mt.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+    const exp=mt.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+    return{m:m+1,inc,exp,net:inc-exp,has:mt.length>0};
+  });
+  const totInc=months.reduce((s,m)=>s+m.inc,0);
+  const totExp=months.reduce((s,m)=>s+m.exp,0);
+  const totNet=totInc-totExp;
+
+  return(
+    <div style={{paddingBottom:80}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+        <button className="btn" onClick={()=>onYearChange(year-1)} style={{background:C.panel,color:C.sub,padding:"6px 12px"}}>←</button>
+        <span style={{fontSize:15,fontWeight:500,fontFamily:"'Zen Kaku Gothic New',sans-serif",color:C.text}}>{year}年</span>
+        <button className="btn" onClick={()=>onYearChange(year+1)} style={{background:C.panel,color:C.sub,padding:"6px 12px"}}>→</button>
+      </div>
+      {/* Header */}
+      <div className="yr-row" style={{borderBottomColor:C.border}}>
+        {["","収入","支出","収支"].map((h,i)=>(
+          <div key={i} style={{fontSize:10,color:C.muted,textAlign:i>0?"right":"left",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{h}</div>
+        ))}
+      </div>
+      {months.map(({m,inc,exp,net,has})=>(
+        <div key={m} className="yr-row" style={{borderBottomColor:C.border,opacity:has?1:0.35}}>
+          <div style={{fontSize:12,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{m}月</div>
+          <div style={{fontSize:12,color:C.income,textAlign:"right"}}>{inc>0?`+${inc.toLocaleString("ja-JP")}`:"-"}</div>
+          <div style={{fontSize:12,color:C.expense,textAlign:"right"}}>{exp>0?`-${exp.toLocaleString("ja-JP")}`:"-"}</div>
+          <div style={{fontSize:12,color:C.bal(net),textAlign:"right",fontWeight:500}}>{has?(net>=0?"+":"")+net.toLocaleString("ja-JP"):"-"}</div>
+        </div>
+      ))}
+      {/* Total row */}
+      <div style={{display:"grid",gridTemplateColumns:"3rem 1fr 1fr 1fr",gap:4,padding:"12px 0",marginTop:4,borderTop:`2px solid ${C.border}`}}>
+        <div style={{fontSize:12,color:C.text,fontFamily:"'Zen Kaku Gothic New',sans-serif",fontWeight:700}}>合計</div>
+        <div style={{fontSize:12,color:C.income,textAlign:"right",fontWeight:700}}>+{totInc.toLocaleString("ja-JP")}</div>
+        <div style={{fontSize:12,color:C.expense,textAlign:"right",fontWeight:700}}>-{totExp.toLocaleString("ja-JP")}</div>
+        <div style={{fontSize:13,color:C.bal(totNet),textAlign:"right",fontWeight:700}}>{totNet>=0?"+":""}{totNet.toLocaleString("ja-JP")}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Calendar View ─────────────────────────────────────────────
+function CalendarView({tabId,bg,txsOverride}){
+  const [txs,setTxs]=useState(()=>{
+    if(txsOverride) return txsOverride;
+    try{return JSON.parse(localStorage.getItem(TX_KEY(tabId)))||[];}catch{return[];}
+  });
+  const readonly=!!txsOverride;
+  const [view,setView]=useState(new Date());
+  const [viewMode,setViewMode]=useState("month"); // "month" | "year"
+  const [sel,setSel]=useState(null);
+  const [modal,setModal]=useState(false);
+  const [form,setForm]=useState({type:"income",amount:"",memo:"",date:toDateStr(new Date())});
+  const [editId,setEditId]=useState(null);
+  const [annualYear,setAnnualYear]=useState(new Date().getFullYear());
+
+  const save=useCallback(data=>{setTxs(data);try{localStorage.setItem(TX_KEY(tabId),JSON.stringify(data));}catch{};},[tabId]);
+  const C=colors(bg);
+  const Y=view.getFullYear(),M=view.getMonth();
+  const firstDay=(new Date(Y,M,1).getDay()+6)%7;
+  const daysInMonth=new Date(Y,M+1,0).getDate();
+  const today=new Date();
+  const monthStr=`${Y}-${String(M+1).padStart(2,"0")}`;
+  const mTxs=txs.filter(t=>t.date.startsWith(monthStr));
+  const mIn=mTxs.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const mEx=mTxs.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const mNet=mIn-mEx;
+  const getBal=ds=>txs.filter(t=>t.date<=ds).reduce((s,t)=>s+(t.type==="income"?t.amount:-t.amount),0);
+  const getDayT=ds=>txs.filter(t=>t.date===ds);
+  const selBal=sel?getBal(sel):null;
+  const selTxs=sel?getDayT(sel):[];
+
+  const openAdd=()=>{setEditId(null);setForm({type:"income",amount:"",memo:"",date:sel||toDateStr(new Date())});setModal(true);};
+  const openEdit=tx=>{setEditId(tx.id);setForm({type:tx.type,amount:String(tx.amount),memo:tx.memo,date:tx.date});setModal(true);};
+  const submit=()=>{
+    if(!form.amount||isNaN(+form.amount)||+form.amount<=0)return;
+    save(editId?txs.map(t=>t.id===editId?{...t,...form,amount:+form.amount}:t):[...txs,{id:Date.now(),...form,amount:+form.amount}]);
+    setModal(false);
+  };
+
+  if(viewMode==="year") return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+        <button className="btn" onClick={()=>setViewMode("month")} style={{background:C.panel,color:C.sub,fontSize:12,padding:"5px 10px"}}>← 月表示</button>
+        <span style={{fontSize:11,color:C.muted,letterSpacing:2,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>年間収支</span>
+        <div style={{width:72}}/>
+      </div>
+      <AnnualView txs={txs} year={annualYear} onYearChange={setAnnualYear} bg={bg}/>
+    </div>
+  );
+
+  return(
+    <div style={{paddingBottom:80}}>
+      {/* Monthly summary + year toggle */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+        <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,background:C.panel,borderRadius:8,padding:"10px 12px"}}>
+          {[["収入",`+${mIn.toLocaleString("ja-JP")}`,C.income],["支出",`-${mEx.toLocaleString("ja-JP")}`,C.expense],["収支",`${mNet>=0?"+":""}${mNet.toLocaleString("ja-JP")}`,C.bal(mNet)]].map(([label,val,color],i)=>(
+            <div key={i} style={{textAlign:"center",borderLeft:i>0?`1px solid ${C.border}`:"none",borderRight:i<2?`1px solid ${C.border}`:"none"}}>
+              <div style={{fontSize:10,color:C.muted,marginBottom:3,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{label}</div>
+              <div style={{fontSize:12,color,fontWeight:500}}>{mTxs.length>0?val:"-"}</div>
+            </div>
+          ))}
+        </div>
+        <button className="btn" onClick={()=>{setAnnualYear(Y);setViewMode("year");}} style={{background:C.panel,color:C.sub,fontSize:11,padding:"6px 10px",flexShrink:0}}>年間</button>
+      </div>
+
+      {/* Month nav */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        <button className="btn" onClick={()=>setView(new Date(Y,M-1,1))} style={{background:C.panel,color:C.sub,padding:"6px 12px"}}>←</button>
+        <span style={{fontSize:15,fontWeight:500,fontFamily:"'Zen Kaku Gothic New',sans-serif",color:C.text}}>{Y}年 {M+1}月</span>
+        <button className="btn" onClick={()=>setView(new Date(Y,M+1,1))} style={{background:C.panel,color:C.sub,padding:"6px 12px"}}>→</button>
+      </div>
+
+      {/* Selected day balance */}
+      {sel&&(
+        <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px",marginBottom:16}}>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{sel} 時点の残高</div>
+          <div style={{fontSize:28,fontWeight:500,color:C.bal(selBal),letterSpacing:-1}}>{fmtM(selBal)}</div>
+        </div>
+      )}
+
+      {/* Calendar header */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4}}>
+        {DAYS_JP.map((d,i)=>(
+          <div key={d} style={{textAlign:"center",fontSize:11,color:i===6?C.sun:i===5?C.sat:C.muted,padding:"4px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{d}</div>
+        ))}
+      </div>
+
+      {/* Calendar grid */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+        {Array(firstDay).fill(null).map((_,i)=><div key={`e${i}`}/>)}
+        {Array(daysInMonth).fill(null).map((_,i)=>{
+          const day=i+1;
+          const ds=`${Y}-${String(M+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+          const bal=getBal(ds),dt=getDayT(ds);
+          const hasIn=dt.some(t=>t.type==="income"),hasEx=dt.some(t=>t.type==="expense");
+          const isToday=isSameDay(new Date(Y,M,day),today),isSel=sel===ds;
+          const dow=new Date(Y,M,day).getDay(),hol=HOLIDAYS[ds];
+          const dayC=dow===0||hol?C.sun:dow===6?C.sat:C.text;
+          return(
+            <div key={day} className={`day-cell${isSel?" selected":""}${isToday?" today":""}`}
+              onClick={()=>setSel(ds)} style={{padding:"4px 2px",background:isSel?"rgba(59,130,246,0.15)":"transparent"}}>
+              <span style={{fontSize:13,fontWeight:isToday?700:400,color:dayC}}>{day}</span>
+              {bal!==0&&<span style={{fontSize:8,color:C.bal(bal),letterSpacing:-0.5,lineHeight:1}}>{bal<0?`-${Math.abs(bal).toLocaleString("ja-JP")}`:bal.toLocaleString("ja-JP")}</span>}
+              <div style={{display:"flex",gap:2,alignItems:"center",minHeight:6}}>
+                {hasIn&&<span style={{width:4,height:4,borderRadius:"50%",background:"#3b82f6",display:"block"}}/>}
+                {hasEx&&<span style={{width:4,height:4,borderRadius:"50%",background:C.expense,display:"block"}}/>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Transaction list */}
+      {sel&&(
+        <div style={{marginTop:24}}>
+          <div style={{fontSize:11,color:C.muted,letterSpacing:2,marginBottom:10,fontFamily:"'Zen Kaku Gothic New',sans-serif",display:"flex",alignItems:"center",gap:8}}>
+            {sel} の取引 {HOLIDAYS[sel]&&<span style={{color:C.sun,letterSpacing:0,fontSize:11}}>🎌 {HOLIDAYS[sel]}</span>}
+          </div>
+          {selTxs.length===0
+            ?<div style={{textAlign:"center",color:C.muted,fontSize:13,padding:"24px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>この日の取引はありません</div>
+            :selTxs.map(tx=>(
+              <div key={tx.id} className="tx-item" onClick={()=>!readonly&&openEdit(tx)} style={{background:C.panel}}>
+                <div>
+                  <div style={{fontSize:12,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{tx.memo||(tx.type==="income"?"収入":"支出")}</div>
+                  <div style={{fontSize:16,fontWeight:500,color:tx.type==="income"?C.income:C.expense,marginTop:2}}>{tx.type==="income"?"+":"-"}¥{tx.amount.toLocaleString("ja-JP")}</div>
+                </div>
+                {!readonly&&<button className="del-btn" onClick={e=>{e.stopPropagation();save(txs.filter(t=>t.id!==tx.id));}}>✕</button>}
+              </div>
+            ))
+          }
+          {!readonly&&<button className="btn" onClick={openAdd} style={{background:C.panel,color:C.sub,width:"100%",marginTop:8,border:`1px dashed ${C.border}`}}>+ この日に取引を追加</button>}
+        </div>
+      )}
+
+      {!readonly&&!sel&&<button onClick={openAdd} style={{position:"fixed",right:20,bottom:88,width:52,height:52,borderRadius:"50%",background:"#1d4ed8",color:"#fff",border:"none",fontSize:24,cursor:"pointer",boxShadow:"0 4px 16px rgba(29,78,216,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50}}>+</button>}
+
+      {modal&&(
+        <div className="modal-overlay" onClick={()=>setModal(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:20,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{editId?"取引を編集":"取引を追加"}</div>
+            <div style={{display:"flex",gap:6,marginBottom:16,background:"#0d1117",borderRadius:8,padding:4}}>
+              <button className="type-btn" onClick={()=>setForm(f=>({...f,type:"income"}))} style={{background:form.type==="income"?"#166534":"transparent",color:form.type==="income"?"#4ade80":"#64748b"}}>収入</button>
+              <button className="type-btn" onClick={()=>setForm(f=>({...f,type:"expense"}))} style={{background:form.type==="expense"?"#7f1d1d":"transparent",color:form.type==="expense"?"#f87171":"#64748b"}}>支出</button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <div><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>日付</div><input type="date" className="input-field" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></div>
+              <div><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>金額 (円)</div><input type="number" className="input-field" placeholder="0" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))}/></div>
+              <div><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>メモ (任意)</div><input type="text" className="input-field" placeholder="内容を入力..." value={form.memo} onChange={e=>setForm(f=>({...f,memo:e.target.value}))}/></div>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:20}}>
+              <button className="btn" onClick={()=>setModal(false)} style={{background:"#1e293b",color:"#94a3b8",flex:1}}>キャンセル</button>
+              <button className="btn" onClick={submit} style={{background:"#1d4ed8",color:"#fff",flex:1}}>{editId?"更新":"追加"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Total View ────────────────────────────────────────────────
+function TotalView({settings,bg}){
+  const srcTabs=settings.tabs.filter(t=>!t.isTotal&&t.type!=="tracker");
+  const allTxsMap=useMemo(()=>{
+    const m={};
+    srcTabs.forEach(tab=>{
+      try{m[tab.id]=JSON.parse(localStorage.getItem(TX_KEY(tab.id)))||[];}catch{m[tab.id]=[];}
+    });
+    return m;
+  },[settings]);
+  const allTxs=srcTabs.flatMap(tab=>allTxsMap[tab.id]);
+  const C=colors(bg);
+  const [view,setView]=useState(new Date());
+  const [viewMode,setViewMode]=useState("month");
+  const [annualYear,setAnnualYear]=useState(new Date().getFullYear());
+  const [sel,setSel]=useState(null);
+  const Y=view.getFullYear(),M=view.getMonth();
+  const firstDay=(new Date(Y,M,1).getDay()+6)%7;
+  const daysInMonth=new Date(Y,M+1,0).getDate();
+  const today=new Date();
+  const monthStr=`${Y}-${String(M+1).padStart(2,"0")}`;
+  const mTxs=allTxs.filter(t=>t.date.startsWith(monthStr));
+  const mIn=mTxs.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const mEx=mTxs.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const mNet=mIn-mEx;
+  const getBal=ds=>allTxs.filter(t=>t.date<=ds).reduce((s,t)=>s+(t.type==="income"?t.amount:-t.amount),0);
+  const getDayT=ds=>allTxs.filter(t=>t.date===ds);
+  const selBal=sel?getBal(sel):null;
+  const selTxs=sel?getDayT(sel):[];
+
+  const getTabName=tx=>srcTabs.find(tab=>(allTxsMap[tab.id]||[]).some(x=>x.id===tx.id))?.name||"";
+
+  if(viewMode==="year") return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+        <button className="btn" onClick={()=>setViewMode("month")} style={{background:C.panel,color:C.sub,fontSize:12,padding:"5px 10px"}}>← 月表示</button>
+        <span style={{fontSize:11,color:C.muted,letterSpacing:2,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>年間収支（合計）</span>
+        <div style={{width:72}}/>
+      </div>
+      <AnnualView txs={allTxs} year={annualYear} onYearChange={setAnnualYear} bg={bg}/>
+    </div>
+  );
+
+  return(
+    <div style={{paddingBottom:80}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+        <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,background:C.panel,borderRadius:8,padding:"10px 12px"}}>
+          {[["収入",`+${mIn.toLocaleString("ja-JP")}`,C.income],["支出",`-${mEx.toLocaleString("ja-JP")}`,C.expense],["収支",`${mNet>=0?"+":""}${mNet.toLocaleString("ja-JP")}`,C.bal(mNet)]].map(([label,val,color],i)=>(
+            <div key={i} style={{textAlign:"center",borderLeft:i>0?`1px solid ${C.border}`:"none",borderRight:i<2?`1px solid ${C.border}`:"none"}}>
+              <div style={{fontSize:10,color:C.muted,marginBottom:3,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{label}</div>
+              <div style={{fontSize:12,color,fontWeight:500}}>{mTxs.length>0?val:"-"}</div>
+            </div>
+          ))}
+        </div>
+        <button className="btn" onClick={()=>{setAnnualYear(Y);setViewMode("year");}} style={{background:C.panel,color:C.sub,fontSize:11,padding:"6px 10px",flexShrink:0}}>年間</button>
+      </div>
+
+      {/* タブ別内訳 */}
+      <div style={{display:"grid",gridTemplateColumns:`repeat(${srcTabs.length},1fr)`,gap:6,marginBottom:16}}>
+        {srcTabs.map(tab=>{
+          const tabM=(allTxsMap[tab.id]||[]).filter(t=>t.date.startsWith(monthStr));
+          const tIn=tabM.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+          const tEx=tabM.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+          const tNet=tIn-tEx;
+          return(
+            <div key={tab.id} style={{background:C.panel,borderRadius:8,padding:"10px 12px",border:`1px solid ${C.border}`}}>
+              <div style={{fontSize:10,color:C.muted,marginBottom:6,fontFamily:"'Zen Kaku Gothic New',sans-serif",letterSpacing:1}}>{tab.name}</div>
+              <div style={{fontSize:11,color:C.income,marginBottom:2}}>{tIn>0?`+${tIn.toLocaleString("ja-JP")}`:"-"}</div>
+              <div style={{fontSize:11,color:C.expense,marginBottom:4}}>{tEx>0?`-${tEx.toLocaleString("ja-JP")}`:"-"}</div>
+              <div style={{fontSize:13,fontWeight:600,color:C.bal(tNet),borderTop:`1px solid ${C.border}`,paddingTop:4}}>{tabM.length>0?((tNet>=0?"+":"")+tNet.toLocaleString("ja-JP")):"-"}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        <button className="btn" onClick={()=>setView(new Date(Y,M-1,1))} style={{background:C.panel,color:C.sub,padding:"6px 12px"}}>←</button>
+        <span style={{fontSize:15,fontWeight:500,fontFamily:"'Zen Kaku Gothic New',sans-serif",color:C.text}}>{Y}年 {M+1}月</span>
+        <button className="btn" onClick={()=>setView(new Date(Y,M+1,1))} style={{background:C.panel,color:C.sub,padding:"6px 12px"}}>→</button>
+      </div>
+      {sel&&(
+        <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px",marginBottom:16}}>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{sel} 時点の残高（合計）</div>
+          <div style={{fontSize:28,fontWeight:500,color:C.bal(selBal),letterSpacing:-1}}>{fmtM(selBal)}</div>
+        </div>
+      )}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4}}>
+        {DAYS_JP.map((d,i)=><div key={d} style={{textAlign:"center",fontSize:11,color:i===6?C.sun:i===5?C.sat:C.muted,padding:"4px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{d}</div>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+        {Array(firstDay).fill(null).map((_,i)=><div key={`e${i}`}/>)}
+        {Array(daysInMonth).fill(null).map((_,i)=>{
+          const day=i+1;
+          const ds=`${Y}-${String(M+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+          const bal=getBal(ds),dt=getDayT(ds);
+          const hasIn=dt.some(t=>t.type==="income"),hasEx=dt.some(t=>t.type==="expense");
+          const isToday=isSameDay(new Date(Y,M,day),today),isSel=sel===ds;
+          const dow=new Date(Y,M,day).getDay(),hol=HOLIDAYS[ds];
+          return(
+            <div key={day} className={`day-cell${isSel?" selected":""}${isToday?" today":""}`} onClick={()=>setSel(ds)} style={{padding:"4px 2px",background:isSel?"rgba(59,130,246,0.15)":"transparent"}}>
+              <span style={{fontSize:13,fontWeight:isToday?700:400,color:dow===0||hol?C.sun:dow===6?C.sat:C.text}}>{day}</span>
+              {bal!==0&&<span style={{fontSize:8,color:C.bal(bal),letterSpacing:-0.5,lineHeight:1}}>{bal<0?`-${Math.abs(bal).toLocaleString("ja-JP")}`:bal.toLocaleString("ja-JP")}</span>}
+              <div style={{display:"flex",gap:2,alignItems:"center",minHeight:6}}>
+                {hasIn&&<span style={{width:4,height:4,borderRadius:"50%",background:"#3b82f6",display:"block"}}/>}
+                {hasEx&&<span style={{width:4,height:4,borderRadius:"50%",background:C.expense,display:"block"}}/>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {sel&&(
+        <div style={{marginTop:24}}>
+          <div style={{fontSize:11,color:C.muted,letterSpacing:2,marginBottom:10,fontFamily:"'Zen Kaku Gothic New',sans-serif",display:"flex",alignItems:"center",gap:8}}>
+            {sel} の取引（合計） {HOLIDAYS[sel]&&<span style={{color:C.sun,letterSpacing:0,fontSize:11}}>🎌 {HOLIDAYS[sel]}</span>}
+          </div>
+          {selTxs.length===0
+            ?<div style={{textAlign:"center",color:C.muted,fontSize:13,padding:"24px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>この日の取引はありません</div>
+            :selTxs.map((tx,idx)=>(
+              <div key={idx} className="tx-item" style={{background:C.panel}}>
+                <div>
+                  <div style={{fontSize:11,color:C.muted,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>{getTabName(tx)}</div>
+                  <div style={{fontSize:12,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{tx.memo||(tx.type==="income"?"収入":"支出")}</div>
+                  <div style={{fontSize:15,fontWeight:500,color:tx.type==="income"?C.income:C.expense,marginTop:2}}>{tx.type==="income"?"+":"-"}¥{tx.amount.toLocaleString("ja-JP")}</div>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tracker View ──────────────────────────────────────────────
+function TrackerView({tabId,bg,config}){
+  const [entries,setEntries]=useState(()=>{try{return JSON.parse(localStorage.getItem(TRACKER_KEY(tabId)))||[];}catch{return[];}});
+  const [modal,setModal]=useState(false);
+  const [form,setForm]=useState({amount:"",memo:"",date:toDateStr(new Date()),sign:"plus"});
+  const [editId,setEditId]=useState(null);
+  const C=colors(bg);
+
+  const save=data=>{setEntries(data);try{localStorage.setItem(TRACKER_KEY(tabId),JSON.stringify(data));}catch{};};
+  const goal=config?.goal||0;
+  const mode=config?.mode||"save"; // "save"=貯蓄 "repay"=返済
+
+  const total=entries.reduce((s,e)=>s+(e.sign==="plus"?e.amount:-e.amount),0);
+  const pct=goal>0?Math.min(Math.abs(total)/goal*100,100):0;
+  const barColor=mode==="repay"?(total<=0?"#4ade80":"#f87171"):(total>=0?"#4ade80":"#f87171");
+  const remaining=goal>0?goal-Math.abs(total):null;
+
+  const submit=()=>{
+    if(!form.amount||isNaN(+form.amount)||+form.amount<=0)return;
+    if(editId){save(entries.map(e=>e.id===editId?{...e,...form,amount:+form.amount}:e));}
+    else{save([...entries,{id:Date.now(),...form,amount:+form.amount}]);}
+    setModal(false);
+  };
+
+  const sorted=[...entries].sort((a,b)=>b.date.localeCompare(a.date));
+
+  return(
+    <div style={{paddingBottom:80}}>
+      {/* Progress card */}
+      <div style={{background:C.panel,borderRadius:12,padding:"20px",marginBottom:16,border:`1px solid ${C.border}`}}>
+        <div style={{fontSize:11,color:C.muted,marginBottom:8,fontFamily:"'Zen Kaku Gothic New',sans-serif",letterSpacing:1}}>
+          {mode==="repay"?"返済トラッカー":"積立トラッカー"}
+        </div>
+        <div style={{fontSize:32,fontWeight:700,color:barColor,letterSpacing:-1,marginBottom:4}}>{fmtM(Math.abs(total))}</div>
+        {goal>0&&(
+          <>
+            <div style={{fontSize:11,color:C.muted,marginBottom:8,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>
+              目標: {fmtM(goal)} {remaining>0&&`（残り ${fmtM(remaining)}）`}{remaining<=0&&"✓ 達成！"}
+            </div>
+            <div style={{background:C.border,borderRadius:4,height:8,overflow:"hidden"}}>
+              <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:4,transition:"width 0.5s ease"}}/>
+            </div>
+            <div style={{fontSize:11,color:C.muted,marginTop:4,textAlign:"right",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{pct.toFixed(1)}%</div>
+          </>
+        )}
+      </div>
+
+      {/* Entry list */}
+      <div style={{fontSize:11,color:C.muted,letterSpacing:2,marginBottom:10,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>履歴</div>
+      {sorted.length===0&&<div style={{textAlign:"center",color:C.muted,fontSize:13,padding:"24px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>まだ記録がありません</div>}
+      {sorted.map(e=>(
+        <div key={e.id} className="tx-item" onClick={()=>{setEditId(e.id);setForm({amount:String(e.amount),memo:e.memo,date:e.date,sign:e.sign});setModal(true);}} style={{background:C.panel}}>
+          <div>
+            <div style={{fontSize:11,color:C.muted,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>{e.date}</div>
+            <div style={{fontSize:12,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{e.memo||"記録"}</div>
+            <div style={{fontSize:16,fontWeight:500,color:e.sign==="plus"?C.income:C.expense,marginTop:2}}>{e.sign==="plus"?"+":"-"}¥{e.amount.toLocaleString("ja-JP")}</div>
+          </div>
+          <button className="del-btn" onClick={ev=>{ev.stopPropagation();save(entries.filter(x=>x.id!==e.id));}}>✕</button>
+        </div>
+      ))}
+
+      <button onClick={()=>{setEditId(null);setForm({amount:"",memo:"",date:toDateStr(new Date()),sign:"plus"});setModal(true);}} style={{position:"fixed",right:20,bottom:88,width:52,height:52,borderRadius:"50%",background:"#1d4ed8",color:"#fff",border:"none",fontSize:24,cursor:"pointer",boxShadow:"0 4px 16px rgba(29,78,216,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50}}>+</button>
+
+      {modal&&(
+        <div className="modal-overlay" onClick={()=>setModal(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:20,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{editId?"記録を編集":"記録を追加"}</div>
+            <div style={{display:"flex",gap:6,marginBottom:16,background:"#0d1117",borderRadius:8,padding:4}}>
+              <button className="type-btn" onClick={()=>setForm(f=>({...f,sign:"plus"}))} style={{background:form.sign==="plus"?"#166534":"transparent",color:form.sign==="plus"?"#4ade80":"#64748b"}}>+ 増加</button>
+              <button className="type-btn" onClick={()=>setForm(f=>({...f,sign:"minus"}))} style={{background:form.sign==="minus"?"#7f1d1d":"transparent",color:form.sign==="minus"?"#f87171":"#64748b"}}>- 減少</button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <div><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>日付</div><input type="date" className="input-field" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/></div>
+              <div><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>金額 (円)</div><input type="number" className="input-field" placeholder="0" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))}/></div>
+              <div><div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>メモ (任意)</div><input type="text" className="input-field" placeholder="内容を入力..." value={form.memo} onChange={e=>setForm(f=>({...f,memo:e.target.value}))}/></div>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:20}}>
+              <button className="btn" onClick={()=>setModal(false)} style={{background:"#1e293b",color:"#94a3b8",flex:1}}>キャンセル</button>
+              <button className="btn" onClick={submit} style={{background:"#1d4ed8",color:"#fff",flex:1}}>{editId?"更新":"追加"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Settings View ─────────────────────────────────────────────
+function SettingsView({settings,onSave}){
+  const [draft,setDraft]=useState(JSON.parse(JSON.stringify(settings)));
+  const upd=(id,key,val)=>setDraft(d=>({...d,tabs:d.tabs.map(t=>t.id===id?{...t,[key]:val}:t)}));
+
+  const addTracker=()=>{
+    const id="tracker_"+Date.now();
+    setDraft(d=>({...d,tabs:[...d.tabs,{id,name:"トラッカー",bg:"#0d1117",type:"tracker",mode:"save",goal:0}]}));
+  };
+  const removeTab=id=>setDraft(d=>({...d,tabs:d.tabs.filter(t=>t.id!==id)}));
+
+  const doExport=id=>{
+    const key=id.startsWith("tracker_")?TRACKER_KEY(id):TX_KEY(id);
+    const data=JSON.parse(localStorage.getItem(key)||"[]");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));
+    a.download=`mc-${id}-${toDateStr(new Date())}.json`;
+    a.click();
+  };
+  const doImport=(id,e)=>{
+    const file=e.target.files[0];if(!file)return;
+    const r=new FileReader();
+    r.onload=ev=>{
+      try{const d=JSON.parse(ev.target.result);if(Array.isArray(d)){const key=id.startsWith("tracker_")?TRACKER_KEY(id):TX_KEY(id);localStorage.setItem(key,JSON.stringify(d));alert(`${d.length}件読み込みました`);}else alert("形式が正しくありません");}
+      catch{alert("読み込み失敗");}
+    };
+    r.readAsText(file);e.target.value="";
+  };
+
+  return(
+    <div style={{paddingBottom:80}}>
+      <div style={{fontSize:11,color:"#64748b",letterSpacing:3,marginBottom:20,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>設定</div>
+      {draft.tabs.map((tab,idx)=>(
+        <div key={tab.id} style={{marginBottom:28}}>
+          <div style={{fontSize:11,color:"#94a3b8",letterSpacing:2,marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif",paddingBottom:8,borderBottom:"1px solid #1e293b",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span>タブ {idx+1}{tab.isTotal?" (合計・自動)":tab.type==="tracker"?" (トラッカー)":""}</span>
+            {tab.type==="tracker"&&<button className="btn" onClick={()=>removeTab(tab.id)} style={{background:"#7f1d1d",color:"#f87171",fontSize:11,padding:"3px 8px"}}>削除</button>}
+          </div>
+          <div className="settings-row">
+            <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>タブ名</span>
+            <input type="text" value={tab.name} onChange={e=>upd(tab.id,"name",e.target.value)} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,color:"#e2e8f0",padding:"6px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:160,textAlign:"right"}}/>
+          </div>
+          <div className="settings-row" style={{flexDirection:"column",alignItems:"flex-start",gap:12}}>
+            <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>背景色</span>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              {BG_COLORS.map(c=>(
+                <div key={c.value} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
+                  <div className="swatch" style={{background:c.value,boxShadow:tab.bg===c.value?"0 0 0 2px #e2e8f0":"0 0 0 1px #334155"}} onClick={()=>upd(tab.id,"bg",c.value)}/>
+                  <span style={{fontSize:9,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{c.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {tab.type==="tracker"&&(
+            <>
+              <div className="settings-row">
+                <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>モード</span>
+                <div style={{display:"flex",gap:6}}>
+                  {[["save","積立"],["repay","返済"]].map(([v,l])=>(
+                    <button key={v} className="btn" onClick={()=>upd(tab.id,"mode",v)} style={{background:tab.mode===v?"#1d4ed8":"#1e293b",color:tab.mode===v?"#fff":"#94a3b8",fontSize:12,padding:"5px 10px"}}>{l}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="settings-row">
+                <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>目標金額</span>
+                <input type="number" value={tab.goal||""} onChange={e=>upd(tab.id,"goal",+e.target.value||0)} placeholder="0（任意）" style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,color:"#e2e8f0",padding:"6px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:140,textAlign:"right"}}/>
+              </div>
+            </>
+          )}
+          {!tab.isTotal&&(
+            <div className="settings-row">
+              <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>データ</span>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn" onClick={()=>doExport(tab.id)} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"6px 12px"}}>↑ 出力</button>
+                <button className="btn" onClick={()=>document.getElementById(`imp-${tab.id}`).click()} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"6px 12px"}}>↓ 読込</button>
+                <input id={`imp-${tab.id}`} type="file" accept=".json" style={{display:"none"}} onChange={e=>doImport(tab.id,e)}/>
+              </div>
+            </div>
+          )}
+          {tab.isTotal&&<div style={{padding:"10px 0",fontSize:12,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>※ 他のタブのデータを自動集計します</div>}
+        </div>
+      ))}
+      <button className="btn" onClick={addTracker} style={{background:"#1e293b",color:"#94a3b8",width:"100%",marginBottom:12,border:"1px dashed #334155",padding:12}}>＋ トラッカータブを追加</button>
+      <button className="btn" onClick={()=>onSave(draft)} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>保存する</button>
+    </div>
+  );
+}
+
+// ─── App Root ──────────────────────────────────────────────────
+function App(){
+  const [settings,setSettings]=useState(()=>{try{return JSON.parse(localStorage.getItem(SETTINGS_KEY))||DEFAULT_SETTINGS;}catch{return DEFAULT_SETTINGS;}});
+  const [activeTab,setActiveTab]=useState(settings.tabs[0].id);
+  const [showSettings,setShowSettings]=useState(false);
+
+  const saveSettings=s=>{setSettings(s);try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(s));}catch{};setShowSettings(false);};
+  const curTab=settings.tabs.find(t=>t.id===activeTab)||settings.tabs[0];
+  const bg=showSettings?"#0d1117":curTab.bg;
+  const light=isLight(bg);
+  const C=colors(bg);
+
+  const renderMain=()=>{
+    if(showSettings) return <SettingsView settings={settings} onSave={saveSettings}/>;
+    if(curTab.isTotal) return <TotalView key={activeTab} settings={settings} bg={bg}/>;
+    if(curTab.type==="tracker") return <TrackerView key={activeTab} tabId={curTab.id} bg={bg} config={curTab}/>;
+    return <CalendarView key={activeTab} tabId={activeTab} bg={bg}/>;
+  };
+
+  return(
+    <div style={{minHeight:"100vh",background:bg,color:C.text,fontFamily:"'DM Mono','Courier New',monospace",transition:"background 0.3s"}}>
+      <div style={{padding:"calc(env(safe-area-inset-top,0px) + 20px) 16px 0",maxWidth:480,margin:"0 auto"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+          <span style={{fontSize:11,color:C.muted,letterSpacing:3,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>
+            {showSettings?"SETTINGS":curTab.name.toUpperCase()}
+          </span>
+          <button onClick={()=>setShowSettings(s=>!s)} style={{background:"none",border:"none",cursor:"pointer",color:showSettings?"#3b82f6":C.muted,fontSize:20,lineHeight:1,padding:4}}>⚙</button>
+        </div>
+        {renderMain()}
+      </div>
+      {!showSettings&&(
+        <div className="bottom-tab" style={{background:bg,borderTop:`1px solid ${C.border}`}}>
+          {settings.tabs.map(tab=>(
+            <button key={tab.id} className="tab-item" onClick={()=>setActiveTab(tab.id)}>
+              <div style={{width:32,height:3,borderRadius:2,background:activeTab===tab.id?"#3b82f6":"transparent",marginBottom:4,transition:"background 0.15s"}}/>
+              <span style={{fontSize:tab.name.length>5?10:13,fontFamily:"'Zen Kaku Gothic New',sans-serif",color:activeTab===tab.id?(light?"#0f172a":"#e2e8f0"):C.muted,fontWeight:activeTab===tab.id?700:400}}>{tab.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
