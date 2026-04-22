@@ -55,6 +55,8 @@ const {useState,useCallback,useMemo}=React;
 const SETTINGS_KEY="mc-settings";
 const TX_KEY=id=>`mc-tx-${id}`;
 const TRACKER_KEY=id=>`mc-tracker-${id}`;
+const RECURRING_KEY="mc-recurring";
+const RECURRING_REGISTERED_KEY="mc-recurring-registered"; // {ruleId-YYYY-MM: txId}
 
 const DEFAULT_SETTINGS={
   tabs:[
@@ -87,7 +89,56 @@ const isSameDay=(a,b)=>a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMo
 const balColor=b=>b>0?"#4ade80":b<0?"#f87171":"#94a3b8";
 const isLight=bg=>bg==="#ffffff";
 const DAYS_JP=["月","火","水","木","金","土","日"];
+const DOW_JP=["日","月","火","水","木","金","土"];
 const MONTHS=["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+
+// 定期支払の「その月の該当日」を算出
+// rule: {id, name, tabId, type(income/expense), amount,
+//        scheduleType('date'|'weekday'),
+//        date (1-31 or 'last'),  // 日付指定
+//        weekPosition (1-4 or 'last'), weekday (0-6),  // 曜日指定
+//        holidayShift ('none'|'before'|'after')}
+function calcRecurringDate(rule, year, month){
+  let d;
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  if(rule.scheduleType==="date"){
+    const day = rule.date==="last" ? daysInMonth : Math.min(rule.date, daysInMonth);
+    d = new Date(year, month, day);
+  } else {
+    // 曜日指定
+    const target = rule.weekday; // 0=日
+    if(rule.weekPosition==="last"){
+      // その月の最終 target曜日
+      const last = new Date(year, month+1, 0);
+      const diff = (last.getDay() - target + 7) % 7;
+      d = new Date(year, month, last.getDate()-diff);
+    } else {
+      // 第N target曜日
+      const first = new Date(year, month, 1);
+      const offset = (target - first.getDay() + 7) % 7;
+      const day = 1 + offset + (rule.weekPosition-1)*7;
+      if(day > daysInMonth) return null;
+      d = new Date(year, month, day);
+    }
+  }
+  // 土日祝シフト
+  if(rule.holidayShift && rule.holidayShift !== "none"){
+    const isSkip = date => {
+      const dow = date.getDay();
+      return dow===0 || dow===6 || !!HOLIDAYS[toDateStr(date)];
+    };
+    const step = rule.holidayShift==="before" ? -1 : 1;
+    while(isSkip(d)){
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate()+step);
+    }
+  }
+  return d;
+}
+
+const loadRecurring = () => { try{return JSON.parse(localStorage.getItem(RECURRING_KEY))||[];}catch{return [];} };
+const saveRecurring = (rules) => { try{localStorage.setItem(RECURRING_KEY, JSON.stringify(rules));}catch{} };
+const loadRegistered = () => { try{return JSON.parse(localStorage.getItem(RECURRING_REGISTERED_KEY))||{};}catch{return {};} };
+const saveRegistered = (r) => { try{localStorage.setItem(RECURRING_REGISTERED_KEY, JSON.stringify(r));}catch{} };
 
 function colors(bg){
   const l=isLight(bg);
@@ -160,12 +211,14 @@ function CalendarView({tabId,bg,txsOverride}){
   });
   const readonly=!!txsOverride;
   const [view,setView]=useState(new Date());
-  const [viewMode,setViewMode]=useState("month"); // "month" | "year"
+  const [viewMode,setViewMode]=useState("month");
   const [sel,setSel]=useState(null);
   const [modal,setModal]=useState(false);
   const [form,setForm]=useState({type:"income",amount:"",memo:"",date:toDateStr(new Date())});
   const [editId,setEditId]=useState(null);
   const [annualYear,setAnnualYear]=useState(new Date().getFullYear());
+  const [recurringRules,setRecurringRules]=useState(()=>loadRecurring());
+  const [registered,setRegistered]=useState(()=>loadRegistered());
 
   const save=useCallback(data=>{setTxs(data);try{localStorage.setItem(TX_KEY(tabId),JSON.stringify(data));}catch{};},[tabId]);
   const C=colors(bg);
@@ -182,6 +235,30 @@ function CalendarView({tabId,bg,txsOverride}){
   const getDayT=ds=>txs.filter(t=>t.date===ds);
   const selBal=sel?getBal(sel):null;
   const selTxs=sel?getDayT(sel):[];
+
+  // このタブの今月分の定期支払
+  const monthRecurring = recurringRules
+    .filter(r=>r.tabId===tabId)
+    .map(r=>{
+      const d = calcRecurringDate(r, Y, M);
+      if(!d) return null;
+      const key = `${r.id}-${monthStr}`;
+      const regTxId = registered[key];
+      const isRegistered = regTxId && txs.some(t=>t.id===regTxId);
+      return { rule:r, date:toDateStr(d), registered:isRegistered, regTxId };
+    })
+    .filter(Boolean)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+
+  const registerRecurring = (item) => {
+    const tx = { id: Date.now()+Math.floor(Math.random()*1000), type:item.rule.type, amount:item.rule.amount, memo:item.rule.name, date:item.date };
+    const newTxs = [...txs, tx];
+    save(newTxs);
+    const key = `${item.rule.id}-${monthStr}`;
+    const newReg = {...registered, [key]:tx.id};
+    setRegistered(newReg);
+    saveRegistered(newReg);
+  };
 
   const openAdd=()=>{setEditId(null);setForm({type:"income",amount:"",memo:"",date:sel||toDateStr(new Date())});setModal(true);};
   const openEdit=tx=>{setEditId(tx.id);setForm({type:tx.type,amount:String(tx.amount),memo:tx.memo,date:tx.date});setModal(true);};
@@ -263,6 +340,30 @@ function CalendarView({tabId,bg,txsOverride}){
           );
         })}
       </div>
+
+      {/* Recurring payments list */}
+      {!readonly&&monthRecurring.length>0&&(
+        <div style={{marginTop:20}}>
+          <div style={{fontSize:11,color:C.muted,letterSpacing:2,marginBottom:10,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>定期支払（{M+1}月）</div>
+          {monthRecurring.map(item=>(
+            <div key={item.rule.id} className="tx-item" style={{background:C.panel,opacity:item.registered?1:0.75}}
+              onClick={()=>item.registered ? openEdit(txs.find(t=>t.id===item.regTxId)) : registerRecurring(item)}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:11,color:C.muted,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>
+                  {item.date.slice(5).replace("-","/")}
+                  {!item.registered&&<span style={{marginLeft:6,padding:"1px 6px",background:"#7f1d1d",color:"#fca5a5",borderRadius:3,fontSize:9}}>未登録</span>}
+                  {item.registered&&<span style={{marginLeft:6,padding:"1px 6px",background:"#14532d",color:"#86efac",borderRadius:3,fontSize:9}}>登録済</span>}
+                </div>
+                <div style={{fontSize:13,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{item.rule.name}</div>
+                <div style={{fontSize:15,fontWeight:500,color:item.rule.type==="income"?C.income:C.expense,marginTop:2}}>
+                  {item.rule.type==="income"?"+":"-"}¥{item.rule.amount.toLocaleString("ja-JP")}
+                </div>
+              </div>
+              {!item.registered&&<div style={{fontSize:11,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>タップで登録 →</div>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Transaction list */}
       {sel&&(
@@ -534,7 +635,12 @@ function TrackerView({tabId,bg,config}){
 
 // ─── Settings View ─────────────────────────────────────────────
 function SettingsView({settings,onSave}){
+  const [tab,setTab]=useState("display"); // "display" | "recurring"
   const [draft,setDraft]=useState(JSON.parse(JSON.stringify(settings)));
+  const [rules,setRules]=useState(()=>loadRecurring());
+  const [ruleModal,setRuleModal]=useState(false);
+  const [ruleForm,setRuleForm]=useState(null);
+
   const upd=(id,key,val)=>setDraft(d=>({...d,tabs:d.tabs.map(t=>t.id===id?{...t,[key]:val}:t)}));
 
   const addTracker=()=>{
@@ -561,61 +667,232 @@ function SettingsView({settings,onSave}){
     r.readAsText(file);e.target.value="";
   };
 
+  // 定期支払
+  const regularTabs = draft.tabs.filter(t=>!t.isTotal&&t.type!=="tracker");
+  const openRuleAdd = () => {
+    setRuleForm({
+      id:null,
+      name:"",
+      tabId: regularTabs[0]?.id || "",
+      type:"expense",
+      amount:"",
+      scheduleType:"date",
+      date:1,
+      weekPosition:1,
+      weekday:1,
+      holidayShift:"none",
+    });
+    setRuleModal(true);
+  };
+  const openRuleEdit = (rule) => {
+    setRuleForm({...rule, amount:String(rule.amount)});
+    setRuleModal(true);
+  };
+  const saveRule = () => {
+    if(!ruleForm.name||!ruleForm.amount||isNaN(+ruleForm.amount)||+ruleForm.amount<=0||!ruleForm.tabId){ alert("名称・金額・タブを入力してください"); return; }
+    const newRule = {...ruleForm, amount:+ruleForm.amount, id: ruleForm.id || ("rec_"+Date.now())};
+    const newRules = ruleForm.id ? rules.map(r=>r.id===ruleForm.id?newRule:r) : [...rules, newRule];
+    setRules(newRules);
+    saveRecurring(newRules);
+    setRuleModal(false);
+  };
+  const deleteRule = (id) => {
+    if(!confirm("この定期支払を削除しますか？")) return;
+    const newRules = rules.filter(r=>r.id!==id);
+    setRules(newRules);
+    saveRecurring(newRules);
+  };
+
+  const handleSaveAll = () => { onSave(draft); };
+
   return(
     <div style={{paddingBottom:80}}>
-      <div style={{fontSize:11,color:"#64748b",letterSpacing:3,marginBottom:20,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>設定</div>
-      {draft.tabs.map((tab,idx)=>(
-        <div key={tab.id} style={{marginBottom:28}}>
-          <div style={{fontSize:11,color:"#94a3b8",letterSpacing:2,marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif",paddingBottom:8,borderBottom:"1px solid #1e293b",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span>タブ {idx+1}{tab.isTotal?" (合計・自動)":tab.type==="tracker"?" (トラッカー)":""}</span>
-            {tab.type==="tracker"&&<button className="btn" onClick={()=>removeTab(tab.id)} style={{background:"#7f1d1d",color:"#f87171",fontSize:11,padding:"3px 8px"}}>削除</button>}
-          </div>
-          <div className="settings-row">
-            <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>タブ名</span>
-            <input type="text" value={tab.name} onChange={e=>upd(tab.id,"name",e.target.value)} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,color:"#e2e8f0",padding:"6px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:160,textAlign:"right"}}/>
-          </div>
-          <div className="settings-row" style={{flexDirection:"column",alignItems:"flex-start",gap:12}}>
-            <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>背景色</span>
-            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-              {BG_COLORS.map(c=>(
-                <div key={c.value} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
-                  <div className="swatch" style={{background:c.value,boxShadow:tab.bg===c.value?"0 0 0 2px #e2e8f0":"0 0 0 1px #334155"}} onClick={()=>upd(tab.id,"bg",c.value)}/>
-                  <span style={{fontSize:9,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{c.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          {tab.type==="tracker"&&(
-            <>
+      {/* Top tabs */}
+      <div style={{display:"flex",gap:4,marginBottom:24,background:"#0d1117",borderRadius:8,padding:4}}>
+        <button className="type-btn" onClick={()=>setTab("display")} style={{background:tab==="display"?"#1d4ed8":"transparent",color:tab==="display"?"#fff":"#64748b"}}>表示設定</button>
+        <button className="type-btn" onClick={()=>setTab("recurring")} style={{background:tab==="recurring"?"#1d4ed8":"transparent",color:tab==="recurring"?"#fff":"#64748b"}}>定期支払</button>
+      </div>
+
+      {tab==="display" && (
+        <>
+          {draft.tabs.map((t,idx)=>(
+            <div key={t.id} style={{marginBottom:28}}>
+              <div style={{fontSize:11,color:"#94a3b8",letterSpacing:2,marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif",paddingBottom:8,borderBottom:"1px solid #1e293b",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span>タブ {idx+1}{t.isTotal?" (合計・自動)":t.type==="tracker"?" (トラッカー)":""}</span>
+                {t.type==="tracker"&&<button className="btn" onClick={()=>removeTab(t.id)} style={{background:"#7f1d1d",color:"#f87171",fontSize:11,padding:"3px 8px"}}>削除</button>}
+              </div>
               <div className="settings-row">
-                <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>モード</span>
-                <div style={{display:"flex",gap:6}}>
-                  {[["save","積立"],["repay","返済"]].map(([v,l])=>(
-                    <button key={v} className="btn" onClick={()=>upd(tab.id,"mode",v)} style={{background:tab.mode===v?"#1d4ed8":"#1e293b",color:tab.mode===v?"#fff":"#94a3b8",fontSize:12,padding:"5px 10px"}}>{l}</button>
+                <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>タブ名</span>
+                <input type="text" value={t.name} onChange={e=>upd(t.id,"name",e.target.value)} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,color:"#e2e8f0",padding:"6px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:160,textAlign:"right"}}/>
+              </div>
+              <div className="settings-row" style={{flexDirection:"column",alignItems:"flex-start",gap:12}}>
+                <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>背景色</span>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  {BG_COLORS.map(c=>(
+                    <div key={c.value} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
+                      <div className="swatch" style={{background:c.value,boxShadow:t.bg===c.value?"0 0 0 2px #e2e8f0":"0 0 0 1px #334155"}} onClick={()=>upd(t.id,"bg",c.value)}/>
+                      <span style={{fontSize:9,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{c.label}</span>
+                    </div>
                   ))}
                 </div>
               </div>
-              <div className="settings-row">
-                <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>目標金額</span>
-                <input type="number" value={tab.goal||""} onChange={e=>upd(tab.id,"goal",+e.target.value||0)} placeholder="0（任意）" style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,color:"#e2e8f0",padding:"6px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:140,textAlign:"right"}}/>
+              {t.type==="tracker"&&(
+                <>
+                  <div className="settings-row">
+                    <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>モード</span>
+                    <div style={{display:"flex",gap:6}}>
+                      {[["save","積立"],["repay","返済"]].map(([v,l])=>(
+                        <button key={v} className="btn" onClick={()=>upd(t.id,"mode",v)} style={{background:t.mode===v?"#1d4ed8":"#1e293b",color:t.mode===v?"#fff":"#94a3b8",fontSize:12,padding:"5px 10px"}}>{l}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>目標金額</span>
+                    <input type="number" value={t.goal||""} onChange={e=>upd(t.id,"goal",+e.target.value||0)} placeholder="0（任意）" style={{background:"#1e293b",border:"1px solid #334155",borderRadius:6,color:"#e2e8f0",padding:"6px 10px",fontSize:13,fontFamily:"inherit",outline:"none",width:140,textAlign:"right"}}/>
+                  </div>
+                </>
+              )}
+              {!t.isTotal&&(
+                <div className="settings-row">
+                  <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>データ</span>
+                  <div style={{display:"flex",gap:8}}>
+                    <button className="btn" onClick={()=>doExport(t.id)} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"6px 12px"}}>↑ 出力</button>
+                    <button className="btn" onClick={()=>document.getElementById(`imp-${t.id}`).click()} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"6px 12px"}}>↓ 読込</button>
+                    <input id={`imp-${t.id}`} type="file" accept=".json" style={{display:"none"}} onChange={e=>doImport(t.id,e)}/>
+                  </div>
+                </div>
+              )}
+              {t.isTotal&&<div style={{padding:"10px 0",fontSize:12,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>※ 他のタブのデータを自動集計します</div>}
+            </div>
+          ))}
+          <button className="btn" onClick={addTracker} style={{background:"#1e293b",color:"#94a3b8",width:"100%",marginBottom:12,border:"1px dashed #334155",padding:12}}>＋ トラッカータブを追加</button>
+          <button className="btn" onClick={handleSaveAll} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>保存する</button>
+        </>
+      )}
+
+      {tab==="recurring" && (
+        <>
+          <div style={{fontSize:11,color:"#64748b",letterSpacing:2,marginBottom:12,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>登録済みの定期支払</div>
+          {rules.length===0 && <div style={{textAlign:"center",color:"#64748b",fontSize:13,padding:"24px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>まだ登録がありません</div>}
+          {rules.map(r=>{
+            const tabName = regularTabs.find(t=>t.id===r.tabId)?.name || "?";
+            const scheduleLabel = r.scheduleType==="date"
+              ? (r.date==="last" ? "月末" : `毎月${r.date}日`)
+              : `第${r.weekPosition==="last"?"最終":r.weekPosition}${DOW_JP[r.weekday]}曜`;
+            const shiftLabel = r.holidayShift==="before" ? "(土日祝→前倒し)" : r.holidayShift==="after" ? "(土日祝→後ろ倒し)" : "";
+            return (
+              <div key={r.id} className="tx-item" style={{background:"#1e293b"}} onClick={()=>openRuleEdit(r)}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:10,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>[{tabName}] {scheduleLabel} {shiftLabel}</div>
+                  <div style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{r.name}</div>
+                  <div style={{fontSize:15,fontWeight:500,color:r.type==="income"?"#4ade80":"#f87171",marginTop:2}}>{r.type==="income"?"+":"-"}¥{r.amount.toLocaleString("ja-JP")}</div>
+                </div>
+                <button className="del-btn" onClick={e=>{e.stopPropagation();deleteRule(r.id);}}>✕</button>
               </div>
-            </>
-          )}
-          {!tab.isTotal&&(
-            <div className="settings-row">
-              <span style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>データ</span>
-              <div style={{display:"flex",gap:8}}>
-                <button className="btn" onClick={()=>doExport(tab.id)} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"6px 12px"}}>↑ 出力</button>
-                <button className="btn" onClick={()=>document.getElementById(`imp-${tab.id}`).click()} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"6px 12px"}}>↓ 読込</button>
-                <input id={`imp-${tab.id}`} type="file" accept=".json" style={{display:"none"}} onChange={e=>doImport(tab.id,e)}/>
+            );
+          })}
+          <button className="btn" onClick={openRuleAdd} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginTop:12}}>＋ 新しい定期支払を追加</button>
+        </>
+      )}
+
+      {/* Rule modal */}
+      {ruleModal && ruleForm && (
+        <div className="modal-overlay" onClick={()=>setRuleModal(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxHeight:"85vh",overflowY:"auto"}}>
+            <div style={{fontSize:14,fontWeight:500,marginBottom:20,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{ruleForm.id?"定期支払を編集":"定期支払を追加"}</div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              {/* 名称 */}
+              <div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>名称</div>
+                <input type="text" className="input-field" placeholder="家賃、給与など..." value={ruleForm.name} onChange={e=>setRuleForm(f=>({...f,name:e.target.value}))}/>
+              </div>
+
+              {/* 登録先タブ */}
+              <div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>登録先タブ</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {regularTabs.map(t=>(
+                    <button key={t.id} className="btn" onClick={()=>setRuleForm(f=>({...f,tabId:t.id}))} style={{background:ruleForm.tabId===t.id?"#1d4ed8":"#1e293b",color:ruleForm.tabId===t.id?"#fff":"#94a3b8",fontSize:12,padding:"6px 12px"}}>{t.name}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 種別 */}
+              <div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>種別</div>
+                <div style={{display:"flex",gap:6,background:"#0d1117",borderRadius:8,padding:4}}>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,type:"expense"}))} style={{background:ruleForm.type==="expense"?"#7f1d1d":"transparent",color:ruleForm.type==="expense"?"#f87171":"#64748b"}}>− 支出</button>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,type:"income"}))} style={{background:ruleForm.type==="income"?"#166534":"transparent",color:ruleForm.type==="income"?"#4ade80":"#64748b"}}>＋ 収入</button>
+                </div>
+              </div>
+
+              {/* 金額 */}
+              <div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>金額 (円)</div>
+                <input type="number" className="input-field" placeholder="0" value={ruleForm.amount} onChange={e=>setRuleForm(f=>({...f,amount:e.target.value}))}/>
+              </div>
+
+              {/* スケジュール種別 */}
+              <div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>日にち指定方法</div>
+                <div style={{display:"flex",gap:6,background:"#0d1117",borderRadius:8,padding:4}}>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,scheduleType:"date"}))} style={{background:ruleForm.scheduleType==="date"?"#1d4ed8":"transparent",color:ruleForm.scheduleType==="date"?"#fff":"#64748b"}}>日付指定</button>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,scheduleType:"weekday"}))} style={{background:ruleForm.scheduleType==="weekday"?"#1d4ed8":"transparent",color:ruleForm.scheduleType==="weekday"?"#fff":"#64748b"}}>曜日指定</button>
+                </div>
+              </div>
+
+              {ruleForm.scheduleType==="date" && (
+                <div>
+                  <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>日付</div>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <select className="input-field" value={ruleForm.date} onChange={e=>setRuleForm(f=>({...f,date:e.target.value==="last"?"last":+e.target.value}))} style={{flex:1}}>
+                      {Array.from({length:31},(_,i)=><option key={i+1} value={i+1}>{i+1}日</option>)}
+                      <option value="last">月末</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {ruleForm.scheduleType==="weekday" && (
+                <div style={{display:"flex",gap:8}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>週</div>
+                    <select className="input-field" value={ruleForm.weekPosition} onChange={e=>setRuleForm(f=>({...f,weekPosition:e.target.value==="last"?"last":+e.target.value}))}>
+                      <option value={1}>第1</option>
+                      <option value={2}>第2</option>
+                      <option value={3}>第3</option>
+                      <option value={4}>第4</option>
+                      <option value="last">最終</option>
+                    </select>
+                  </div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>曜日</div>
+                    <select className="input-field" value={ruleForm.weekday} onChange={e=>setRuleForm(f=>({...f,weekday:+e.target.value}))}>
+                      {DOW_JP.map((d,i)=><option key={i} value={i}>{d}曜</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* 土日祝 */}
+              <div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>土日祝に該当する場合</div>
+                <div style={{display:"flex",gap:6,background:"#0d1117",borderRadius:8,padding:4}}>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,holidayShift:"none"}))} style={{background:ruleForm.holidayShift==="none"?"#334155":"transparent",color:ruleForm.holidayShift==="none"?"#e2e8f0":"#64748b",fontSize:11}}>そのまま</button>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,holidayShift:"before"}))} style={{background:ruleForm.holidayShift==="before"?"#334155":"transparent",color:ruleForm.holidayShift==="before"?"#e2e8f0":"#64748b",fontSize:11}}>前倒し</button>
+                  <button className="type-btn" onClick={()=>setRuleForm(f=>({...f,holidayShift:"after"}))} style={{background:ruleForm.holidayShift==="after"?"#334155":"transparent",color:ruleForm.holidayShift==="after"?"#e2e8f0":"#64748b",fontSize:11}}>後ろ倒し</button>
+                </div>
               </div>
             </div>
-          )}
-          {tab.isTotal&&<div style={{padding:"10px 0",fontSize:12,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>※ 他のタブのデータを自動集計します</div>}
+
+            <div style={{display:"flex",gap:8,marginTop:20}}>
+              <button className="btn" onClick={()=>setRuleModal(false)} style={{background:"#1e293b",color:"#94a3b8",flex:1}}>キャンセル</button>
+              <button className="btn" onClick={saveRule} style={{background:"#1d4ed8",color:"#fff",flex:1}}>{ruleForm.id?"更新":"追加"}</button>
+            </div>
+          </div>
         </div>
-      ))}
-      <button className="btn" onClick={addTracker} style={{background:"#1e293b",color:"#94a3b8",width:"100%",marginBottom:12,border:"1px dashed #334155",padding:12}}>＋ トラッカータブを追加</button>
-      <button className="btn" onClick={()=>onSave(draft)} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>保存する</button>
+      )}
     </div>
   );
 }
