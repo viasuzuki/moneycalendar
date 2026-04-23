@@ -238,7 +238,7 @@ function CalendarView({tabId,bg,txsOverride}){
 
   const todayStr = toDateStr(new Date());
 
-  // 自動登録: 各ルールについて createdAt以降〜今日までの全該当月をチェック
+  // 自動登録: createdAt以降〜6ヶ月先までの全該当月をチェック
   React.useEffect(()=>{
     const tabRules = recurringRules.filter(r=>r.tabId===tabId);
     if(tabRules.length===0) return;
@@ -246,13 +246,14 @@ function CalendarView({tabId,bg,txsOverride}){
     let newTxs = [...txs];
     let changed = false;
     const now = new Date();
+    // 終了月: 現在月 + 6ヶ月
+    const endDate = new Date(now.getFullYear(), now.getMonth()+6, 1);
     tabRules.forEach(r=>{
       const createdAt = r.createdAt || toDateStr(now);
       const startY = +createdAt.slice(0,4);
       const startM = +createdAt.slice(5,7) - 1;
-      // ルール作成月から現在月までループ
       let y = startY, m = startM;
-      while(y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth())){
+      while(y < endDate.getFullYear() || (y === endDate.getFullYear() && m <= endDate.getMonth())){
         const d = calcRecurringDate(r, y, m);
         if(d){
           const ds = toDateStr(d);
@@ -260,8 +261,8 @@ function CalendarView({tabId,bg,txsOverride}){
           const key = `${r.id}-${ms}`;
           const regTxId = reg[key];
           const isRegistered = regTxId && newTxs.some(t=>t.id===regTxId);
-          // 該当日が作成日以降 かつ 今日以前 で未登録なら登録
-          if(!isRegistered && ds >= createdAt && ds <= todayStr){
+          // 作成日以降なら登録（未来分も含む）
+          if(!isRegistered && ds >= createdAt){
             const tx = {
               id: Date.now() + Math.floor(Math.random()*100000) + newTxs.length,
               type: r.type,
@@ -671,11 +672,11 @@ function SettingsView({settings,onSave}){
 
   // 定期支払
   const regularTabs = draft.tabs.filter(t=>!t.isTotal&&t.type!=="tracker");
-  const openRuleAdd = () => {
+  const openRuleAdd = (targetTabId) => {
     setRuleForm({
       id:null,
       name:"",
-      tabId: regularTabs[0]?.id || "",
+      tabId: targetTabId || regularTabs[0]?.id || "",
       type:"expense",
       amount:"",
       scheduleType:"date",
@@ -872,7 +873,7 @@ function SettingsView({settings,onSave}){
                 </div>
               );
             })}
-            <button className="btn" onClick={()=>{ openRuleAdd(); setRuleForm(f=>({...f, tabId: currentSubTab})); }} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginTop:12}}>＋ 新しい定期支払を追加</button>
+            <button className="btn" onClick={()=>openRuleAdd(currentSubTab)} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginTop:12}}>＋ 新しい定期支払を追加</button>
 
             {/* Backup/restore */}
             <div style={{marginTop:28,paddingTop:16,borderTop:"1px solid #1e293b"}}>
@@ -901,13 +902,10 @@ function SettingsView({settings,onSave}){
               </div>
 
               {/* 登録先タブ */}
-              <div>
-                <div style={{fontSize:11,color:"#64748b",marginBottom:4,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>登録先タブ</div>
-                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                  {regularTabs.map(t=>(
-                    <button key={t.id} className="btn" onClick={()=>setRuleForm(f=>({...f,tabId:t.id}))} style={{background:ruleForm.tabId===t.id?"#1d4ed8":"#1e293b",color:ruleForm.tabId===t.id?"#fff":"#94a3b8",fontSize:12,padding:"6px 12px"}}>{t.name}</button>
-                  ))}
-                </div>
+              {/* 登録先タブ表示（選択不可） */}
+              <div style={{padding:"8px 12px",background:"#0d1117",borderRadius:6,border:"1px solid #1e293b"}}>
+                <div style={{fontSize:10,color:"#64748b",marginBottom:2,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>登録先</div>
+                <div style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{regularTabs.find(t=>t.id===ruleForm.tabId)?.name || "?"}</div>
               </div>
 
               {/* 種別 */}
