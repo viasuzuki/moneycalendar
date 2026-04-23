@@ -237,6 +237,39 @@ function CalendarView({tabId,bg,txsOverride}){
   const selTxs=sel?getDayT(sel):[];
 
   // このタブの今月分の定期支払
+  const todayStr = toDateStr(new Date());
+
+  // 自動登録: 該当日が過去または今日の未登録分を自動で登録する
+  React.useEffect(()=>{
+    const thisMonthRules = recurringRules.filter(r=>r.tabId===tabId);
+    let reg = {...registered};
+    let newTxs = [...txs];
+    let changed = false;
+    // 閲覧中の月だけでなく、現在の月以前をまとめて処理するためのループ
+    // ただし過去月の未登録分は追わず、今閲覧している月について判定
+    thisMonthRules.forEach(r=>{
+      const d = calcRecurringDate(r, Y, M);
+      if(!d) return;
+      const ds = toDateStr(d);
+      const key = `${r.id}-${monthStr}`;
+      const regTxId = reg[key];
+      const isRegistered = regTxId && newTxs.some(t=>t.id===regTxId);
+      // 日付が今日以前で、未登録なら自動登録
+      if(!isRegistered && ds <= todayStr){
+        const tx = { id: Date.now()+Math.floor(Math.random()*10000)+r.id.length, type:r.type, amount:r.amount, memo:`【定期】${r.name}`, date:ds, fromRecurring:r.id };
+        newTxs.push(tx);
+        reg[key] = tx.id;
+        changed = true;
+      }
+    });
+    if(changed){
+      save(newTxs);
+      setRegistered(reg);
+      saveRegistered(reg);
+    }
+  },[tabId, Y, M, recurringRules]);
+
+  // リストに表示: 今月分のうち「未登録」かつ「日付が未来」のものだけ
   const monthRecurring = recurringRules
     .filter(r=>r.tabId===tabId)
     .map(r=>{
@@ -247,11 +280,11 @@ function CalendarView({tabId,bg,txsOverride}){
       const isRegistered = regTxId && txs.some(t=>t.id===regTxId);
       return { rule:r, date:toDateStr(d), registered:isRegistered, regTxId };
     })
-    .filter(Boolean)
+    .filter(item=>item && !item.registered && item.date > todayStr)
     .sort((a,b)=>a.date.localeCompare(b.date));
 
   const registerRecurring = (item) => {
-    const tx = { id: Date.now()+Math.floor(Math.random()*1000), type:item.rule.type, amount:item.rule.amount, memo:item.rule.name, date:item.date };
+    const tx = { id: Date.now()+Math.floor(Math.random()*1000), type:item.rule.type, amount:item.rule.amount, memo:`【定期】${item.rule.name}`, date:item.date, fromRecurring:item.rule.id };
     const newTxs = [...txs, tx];
     save(newTxs);
     const key = `${item.rule.id}-${monthStr}`;
@@ -341,25 +374,23 @@ function CalendarView({tabId,bg,txsOverride}){
         })}
       </div>
 
-      {/* Recurring payments list */}
+      {/* Recurring payments list - 未来の未登録分のみ表示 */}
       {!readonly&&monthRecurring.length>0&&(
         <div style={{marginTop:20}}>
-          <div style={{fontSize:11,color:C.muted,letterSpacing:2,marginBottom:10,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>定期支払（{M+1}月）</div>
+          <div style={{fontSize:11,color:C.muted,letterSpacing:2,marginBottom:10,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>今月の定期支払予定</div>
           {monthRecurring.map(item=>(
-            <div key={item.rule.id} className="tx-item" style={{background:C.panel,opacity:item.registered?1:0.75}}
-              onClick={()=>item.registered ? openEdit(txs.find(t=>t.id===item.regTxId)) : registerRecurring(item)}>
+            <div key={item.rule.id} className="tx-item" style={{background:C.panel,opacity:0.8}}
+              onClick={()=>registerRecurring(item)}>
               <div style={{flex:1}}>
                 <div style={{fontSize:11,color:C.muted,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>
-                  {item.date.slice(5).replace("-","/")}
-                  {!item.registered&&<span style={{marginLeft:6,padding:"1px 6px",background:"#7f1d1d",color:"#fca5a5",borderRadius:3,fontSize:9}}>未登録</span>}
-                  {item.registered&&<span style={{marginLeft:6,padding:"1px 6px",background:"#14532d",color:"#86efac",borderRadius:3,fontSize:9}}>登録済</span>}
+                  {item.date.slice(5).replace("-","/")} 予定
                 </div>
-                <div style={{fontSize:13,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{item.rule.name}</div>
+                <div style={{fontSize:13,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>【定期】{item.rule.name}</div>
                 <div style={{fontSize:15,fontWeight:500,color:item.rule.type==="income"?C.income:C.expense,marginTop:2}}>
                   {item.rule.type==="income"?"+":"-"}¥{item.rule.amount.toLocaleString("ja-JP")}
                 </div>
               </div>
-              {!item.registered&&<div style={{fontSize:11,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>タップで登録 →</div>}
+              <div style={{fontSize:11,color:C.sub,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>前倒し登録 →</div>
             </div>
           ))}
         </div>
