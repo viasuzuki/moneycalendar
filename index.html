@@ -238,27 +238,44 @@ function CalendarView({tabId,bg,txsOverride}){
 
   const todayStr = toDateStr(new Date());
 
-  // 自動登録: ルール作成日以降かつ該当日が今日以前の未登録分を登録
+  // 自動登録: 各ルールについて createdAt以降〜今日までの全該当月をチェック
   React.useEffect(()=>{
-    const thisMonthRules = recurringRules.filter(r=>r.tabId===tabId);
+    const tabRules = recurringRules.filter(r=>r.tabId===tabId);
+    if(tabRules.length===0) return;
     let reg = {...registered};
     let newTxs = [...txs];
     let changed = false;
-    thisMonthRules.forEach(r=>{
-      const d = calcRecurringDate(r, Y, M);
-      if(!d) return;
-      const ds = toDateStr(d);
-      // ルール作成日（createdAt）より前の該当日はスキップ
-      const createdAt = r.createdAt || "1970-01-01";
-      if(ds < createdAt) return;
-      const key = `${r.id}-${monthStr}`;
-      const regTxId = reg[key];
-      const isRegistered = regTxId && newTxs.some(t=>t.id===regTxId);
-      if(!isRegistered && ds <= todayStr){
-        const tx = { id: Date.now()+Math.floor(Math.random()*10000)+r.id.length, type:r.type, amount:r.amount, memo:`【定期】${r.name}`, date:ds, fromRecurring:r.id };
-        newTxs.push(tx);
-        reg[key] = tx.id;
-        changed = true;
+    const now = new Date();
+    tabRules.forEach(r=>{
+      const createdAt = r.createdAt || toDateStr(now);
+      const startY = +createdAt.slice(0,4);
+      const startM = +createdAt.slice(5,7) - 1;
+      // ルール作成月から現在月までループ
+      let y = startY, m = startM;
+      while(y < now.getFullYear() || (y === now.getFullYear() && m <= now.getMonth())){
+        const d = calcRecurringDate(r, y, m);
+        if(d){
+          const ds = toDateStr(d);
+          const ms = `${y}-${String(m+1).padStart(2,"0")}`;
+          const key = `${r.id}-${ms}`;
+          const regTxId = reg[key];
+          const isRegistered = regTxId && newTxs.some(t=>t.id===regTxId);
+          // 該当日が作成日以降 かつ 今日以前 で未登録なら登録
+          if(!isRegistered && ds >= createdAt && ds <= todayStr){
+            const tx = {
+              id: Date.now() + Math.floor(Math.random()*100000) + newTxs.length,
+              type: r.type,
+              amount: r.amount,
+              memo: `【定期】${r.name}`,
+              date: ds,
+              fromRecurring: r.id,
+            };
+            newTxs.push(tx);
+            reg[key] = tx.id;
+            changed = true;
+          }
+        }
+        m++; if(m>11){ m=0; y++; }
       }
     });
     if(changed){
@@ -266,7 +283,7 @@ function CalendarView({tabId,bg,txsOverride}){
       setRegistered(reg);
       saveRegistered(reg);
     }
-  },[tabId, Y, M, recurringRules]);
+  },[tabId, recurringRules]);
 
   const openAdd=()=>{setEditId(null);setForm({type:"income",amount:"",memo:"",date:sel||toDateStr(new Date())});setModal(true);};
   const openEdit=tx=>{setEditId(tx.id);setForm({type:tx.type,amount:String(tx.amount),memo:tx.memo,date:tx.date});setModal(true);};
@@ -624,6 +641,7 @@ function SettingsView({settings,onSave}){
   const [rules,setRules]=useState(()=>loadRecurring());
   const [ruleModal,setRuleModal]=useState(false);
   const [ruleForm,setRuleForm]=useState(null);
+  const [recurringSubTab,setRecurringSubTab]=useState(null); // sub tab id
 
   const upd=(id,key,val)=>setDraft(d=>({...d,tabs:d.tabs.map(t=>t.id===id?{...t,[key]:val}:t)}));
 
@@ -757,33 +775,117 @@ function SettingsView({settings,onSave}){
           ))}
           <button className="btn" onClick={addTracker} style={{background:"#1e293b",color:"#94a3b8",width:"100%",marginBottom:12,border:"1px dashed #334155",padding:12}}>＋ トラッカータブを追加</button>
           <button className="btn" onClick={handleSaveAll} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>保存する</button>
+
+          <div style={{marginTop:32,paddingTop:16,borderTop:"1px solid #1e293b"}}>
+            <div style={{fontSize:11,color:"#64748b",letterSpacing:2,marginBottom:12,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>アプリ</div>
+            <button className="btn" onClick={()=>{
+              if(confirm("キャッシュをクリアしてアプリを再読み込みします。データは保持されます。")){
+                try {
+                  if("caches" in window) caches.keys().then(keys=>keys.forEach(k=>caches.delete(k)));
+                } catch {}
+                window.location.reload(true);
+              }
+            }} style={{background:"#1e293b",color:"#94a3b8",width:"100%",padding:12,fontSize:13,fontFamily:"'Zen Kaku Gothic New',sans-serif",border:"1px solid #334155"}}>
+              🔄 アップデートを反映（強制リロード）
+            </button>
+            <div style={{fontSize:11,color:"#475569",marginTop:8,fontFamily:"'Zen Kaku Gothic New',sans-serif",textAlign:"center"}}>
+              新バージョンをアップしたのに反映されない時に
+            </div>
+          </div>
         </>
       )}
 
-      {tab==="recurring" && (
-        <>
-          <div style={{fontSize:11,color:"#64748b",letterSpacing:2,marginBottom:12,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>登録済みの定期支払</div>
-          {rules.length===0 && <div style={{textAlign:"center",color:"#64748b",fontSize:13,padding:"24px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>まだ登録がありません</div>}
-          {rules.map(r=>{
-            const tabName = regularTabs.find(t=>t.id===r.tabId)?.name || "?";
-            const scheduleLabel = r.scheduleType==="date"
-              ? (r.date==="last" ? "月末" : `毎月${r.date}日`)
-              : `第${r.weekPosition==="last"?"最終":r.weekPosition}${DOW_JP[r.weekday]}曜`;
-            const shiftLabel = r.holidayShift==="before" ? "(土日祝→前倒し)" : r.holidayShift==="after" ? "(土日祝→後ろ倒し)" : "";
-            return (
-              <div key={r.id} className="tx-item" style={{background:"#1e293b"}} onClick={()=>openRuleEdit(r)}>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:10,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>[{tabName}] {scheduleLabel} {shiftLabel}</div>
-                  <div style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{r.name}</div>
-                  <div style={{fontSize:15,fontWeight:500,color:r.type==="income"?"#4ade80":"#f87171",marginTop:2}}>{r.type==="income"?"+":"-"}¥{r.amount.toLocaleString("ja-JP")}</div>
-                </div>
-                <button className="del-btn" onClick={e=>{e.stopPropagation();deleteRule(r.id);}}>✕</button>
+      {tab==="recurring" && (() => {
+        const currentSubTab = recurringSubTab || regularTabs[0]?.id;
+        const tabRules = rules.filter(r=>r.tabId===currentSubTab);
+        const totalIn = tabRules.filter(r=>r.type==="income").reduce((s,r)=>s+r.amount,0);
+        const totalEx = tabRules.filter(r=>r.type==="expense").reduce((s,r)=>s+r.amount,0);
+        const totalNet = totalIn - totalEx;
+
+        const exportRecurring = () => {
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(new Blob([JSON.stringify(rules,null,2)],{type:"application/json"}));
+          a.download = `mc-recurring-${toDateStr(new Date())}.json`;
+          a.click();
+        };
+        const importRecurring = (e) => {
+          const file = e.target.files[0]; if(!file) return;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            try {
+              const data = JSON.parse(ev.target.result);
+              if(Array.isArray(data)){
+                setRules(data);
+                saveRecurring(data);
+                alert(`${data.length}件読み込みました`);
+              } else alert("形式が正しくありません");
+            } catch { alert("読み込み失敗"); }
+          };
+          reader.readAsText(file);
+          e.target.value = "";
+        };
+
+        return (
+          <>
+            {/* Sub tabs (仕事/プライベート) */}
+            <div style={{display:"flex",gap:4,marginBottom:16,background:"#0d1117",borderRadius:8,padding:4}}>
+              {regularTabs.map(t=>(
+                <button key={t.id} className="type-btn" onClick={()=>setRecurringSubTab(t.id)}
+                  style={{background:currentSubTab===t.id?"#334155":"transparent",color:currentSubTab===t.id?"#e2e8f0":"#64748b",fontSize:12}}>
+                  {t.name}
+                </button>
+              ))}
+            </div>
+
+            {/* Totals */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:16,background:"#111827",borderRadius:8,padding:"10px 12px"}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:10,color:"#64748b",marginBottom:3,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>月収入</div>
+                <div style={{fontSize:12,color:"#4ade80",fontWeight:500}}>{totalIn>0?`+${totalIn.toLocaleString("ja-JP")}`:"-"}</div>
               </div>
-            );
-          })}
-          <button className="btn" onClick={openRuleAdd} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginTop:12}}>＋ 新しい定期支払を追加</button>
-        </>
-      )}
+              <div style={{textAlign:"center",borderLeft:"1px solid #1e293b",borderRight:"1px solid #1e293b"}}>
+                <div style={{fontSize:10,color:"#64748b",marginBottom:3,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>月支出</div>
+                <div style={{fontSize:12,color:"#f87171",fontWeight:500}}>{totalEx>0?`-${totalEx.toLocaleString("ja-JP")}`:"-"}</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:10,color:"#64748b",marginBottom:3,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>月収支</div>
+                <div style={{fontSize:12,color:totalNet>0?"#4ade80":totalNet<0?"#f87171":"#94a3b8",fontWeight:500}}>{tabRules.length>0?((totalNet>=0?"+":"")+totalNet.toLocaleString("ja-JP")):"-"}</div>
+              </div>
+            </div>
+
+            {/* Rule list */}
+            <div style={{fontSize:11,color:"#64748b",letterSpacing:2,marginBottom:12,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>登録済みの定期支払</div>
+            {tabRules.length===0 && <div style={{textAlign:"center",color:"#64748b",fontSize:13,padding:"24px 0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>まだ登録がありません</div>}
+            {tabRules.map(r=>{
+              const scheduleLabel = r.scheduleType==="date"
+                ? (r.date==="last" ? "月末" : `毎月${r.date}日`)
+                : `第${r.weekPosition==="last"?"最終":r.weekPosition}${DOW_JP[r.weekday]}曜`;
+              const shiftLabel = r.holidayShift==="before" ? "(土日祝→前倒し)" : r.holidayShift==="after" ? "(土日祝→後ろ倒し)" : "";
+              return (
+                <div key={r.id} className="tx-item" style={{background:"#1e293b"}} onClick={()=>openRuleEdit(r)}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:10,color:"#64748b",fontFamily:"'Zen Kaku Gothic New',sans-serif",marginBottom:2}}>{scheduleLabel} {shiftLabel}</div>
+                    <div style={{fontSize:13,color:"#e2e8f0",fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>{r.name}</div>
+                    <div style={{fontSize:15,fontWeight:500,color:r.type==="income"?"#4ade80":"#f87171",marginTop:2}}>{r.type==="income"?"+":"-"}¥{r.amount.toLocaleString("ja-JP")}</div>
+                  </div>
+                  <button className="del-btn" onClick={e=>{e.stopPropagation();deleteRule(r.id);}}>✕</button>
+                </div>
+              );
+            })}
+            <button className="btn" onClick={()=>{ openRuleAdd(); setRuleForm(f=>({...f, tabId: currentSubTab})); }} style={{background:"#1d4ed8",color:"#fff",width:"100%",padding:12,fontSize:14,fontFamily:"'Zen Kaku Gothic New',sans-serif",marginTop:12}}>＋ 新しい定期支払を追加</button>
+
+            {/* Backup/restore */}
+            <div style={{marginTop:28,paddingTop:16,borderTop:"1px solid #1e293b"}}>
+              <div style={{fontSize:11,color:"#64748b",letterSpacing:2,marginBottom:12,fontFamily:"'Zen Kaku Gothic New',sans-serif"}}>定期支払データ（全タブ共通）</div>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn" onClick={exportRecurring} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"8px 12px",flex:1}}>↑ 出力</button>
+                <button className="btn" onClick={()=>document.getElementById("imp-recurring").click()} style={{background:"#1e293b",color:"#94a3b8",fontSize:12,padding:"8px 12px",flex:1}}>↓ 読込</button>
+                <input id="imp-recurring" type="file" accept=".json" style={{display:"none"}} onChange={importRecurring}/>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Rule modal */}
       {ruleModal && ruleForm && (
